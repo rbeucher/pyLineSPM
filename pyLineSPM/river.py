@@ -6,6 +6,8 @@ class River(object):
     def __init__(self, surface, nodes, max_node, min_node, precipitation_rate, erodibility, uplift):
 
         self.surface = surface
+        # The surface profile starts at the water divide down to the bottom node of the river.
+        # We use a local reference frane where the origin is set at the water divide.
         self.x = np.abs(self.surface[:,0] - self.surface[0, 0]) # Might want to generalise this.
         self.y = self.surface[:,1]
         self.nodes = nodes
@@ -22,12 +24,10 @@ class River(object):
         # Total cumulative length
         self.length = self.dL[-1]
         
-        # We Assume that the spatial index is increasing upslope so
-        # the minimum elevation should be at index 0 and the maximum at index len(surface)- 1
         if np.argmin(self.y) != len(self.y) - 1:
-            raise ValueError(f"Minimum elevation should be at node 0 not {np.argmin(self.y)}")
+            raise ValueError(f"Minimum elevation should be at node {len(self.y) - 1} not {np.argmin(self.y)}")
         if np.argmax(self.y) != 0:
-            raise ValueError(f"Maximum elevation should be at node {len(self.y) - 1}")
+            raise ValueError(f"Maximum elevation should be at node 0")
         if not np.allclose(np.diff(self.x), np.diff(self.x)[0]):
             raise ValueError("Spacing in x is not uniform")
         for key, val in {"nodes": nodes, "precipitation_rate": precipitation_rate, "erodibility": erodibility, "uplift": uplift}.items():
