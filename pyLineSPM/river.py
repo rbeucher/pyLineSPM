@@ -83,7 +83,7 @@ class River(object):
         self.zT = zt[::-1]
         return self.zT
     
-    def calculate_zR(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=1000, yC=0.1, dt=0.1):
+    def calculate_zR(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=10, yC=10, dt=0.1):
         
         theta = np.radians(theta)
         K = self.erodibility
@@ -105,7 +105,7 @@ class River(object):
                 if hmn == 1.0:
                     D = -0.5 * N*np.log(yC/yD)
                 else:
-                    D = 0.5 * yD**(1-hmn) * N * 1/(1-hmn) * (1-(yC/yD)**(1-hmn))
+                    D = 0.5 * yD**(1-hmn) * N * (1-hmn)**-1 * (1-(yC/yD)**(1-hmn))
             if yD > yC:
                 zD = zT[ix] + yC * np.tan(theta) + 2. * D * U[ix]**(1/n)*xD**hmn
             else:
@@ -113,7 +113,7 @@ class River(object):
         
             edotR = 0.
             if D:
-                edotR = K[ix] * P[ix]**m*ka**m * (zD - zT[ix] - yC * np.tan(theta) / (2*D*xD**hmn))**n
+                edotR = K[ix] * P[ix]**m*ka**m * ((zD - zT[ix] - yC * np.tan(theta)) / (2*D*xD**hmn))**n
             zR[ix] = zD + dt * edotR # need to check that...
 
         return zR
@@ -121,7 +121,7 @@ class River(object):
     def update_surface(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=1000, yC=100, dt=0.1):
         zT = self.calculate_zT(m, n, ka, h, dt)
         zR = self.calculate_zR(m, n, ka, h, theta, xC, yC, dt)
-        self.surface[:, 1] = zT #0.5 * (zT + zR)
+        self.surface[:, 1] = 0.5 * (zT + zR)
         return self.surface
 
     def plot(self):
