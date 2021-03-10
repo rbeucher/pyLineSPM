@@ -45,17 +45,7 @@ class River(object):
         Psum = np.cumsum(P * dx) 
         return Psum * ka * x**(h-1)
     
-    @staticmethod
-    def calculate_D(h, m, n, N, yC, yD):
-        hmn = h*m/n
-        
-        if hmn == 1.0:
-            D = -0.5 * N*np.log(yC/yD)
-        else:
-            D = 0.5 * yD**(1-hmn) * N * 1/(1-hmn) * (1-(yC/yD)**(1-hmn))
-        return D
-    
-    def calculate_zT(self, m=0.5, n=1.0, ka=0.3, h=2.0, dt=0.1, bc=0., xC=0.2):
+    def calculate_zT(self, m=0.5, n=1.0, ka=0.3, h=2.0, dt=0.1, bc=0., xC=50):
         """ Calculate and apply erosion in the trunk channel"""
         
         # The Lowest node in the river is assumed to
@@ -69,25 +59,27 @@ class River(object):
         Q = self.get_discharge(ka, h)[::-1]
         zt = self.y[::-1]
         x = self.x[::-1]
-        dx = np.diff(x)[0]
-        xC = xC * np.max(self.x)
+        dx = np.abs(np.diff(x)[0])
         
-        e0 = 1e-6
-        edot = e0
+        e0 = -1e-6
+        erosion_rate = np.zeros_like(zt)
+        erosion_rate[0] = 0.
         
         # We integrate from the boundary node to the
         # main divide.
         for idx in range(1, len(x)):
-            reltol = 1e3
             if x[idx] < xC:
-                edot = 0.
+                edot= 0.
             else:
+                reltol = 1e3
+                edot = e0
                 while reltol > 1e-7:
                     prev = edot
-                    edot = -K[idx] * Q[idx]**m * (zt[idx] - zt[idx - 1] + dt * (edot - 0.)) / dx**n
-                    reltol = abs((edot - prev) / (edot+1e-8)) # Avoid divide by zero here.
-            zt[idx] = zt[idx] + dt * edot
-            
+                    edot = -K[idx] * Q[idx]**m * (zt[idx] - zt[idx - 1] + dt * (edot - erosion_rate[idx-1])) / dx**n
+                    reltol = (edot - prev) / (edot+1e-8) # Avoid divide by zero here.
+            erosion_rate[idx] = edot
+            zt[idx] = zt[idx] + dt * erosion_rate[idx]
+
         self.zT = zt[::-1]
         return self.zT
     
@@ -122,7 +114,6 @@ class River(object):
             edotR = 0.
             if D:
                 edotR = K[ix] * P[ix]**m*ka**m * (zD - zT[ix] - yC * np.tan(theta) / (2*D*xD**hmn))**n
-            print(edotR)
             zR[ix] = zD + dt * edotR # need to check that...
 
         return zR
