@@ -1,9 +1,10 @@
 import numpy as np
+import sys
 
 
 class River(object):
     
-    def __init__(self, surface, nodes, max_node, min_node, precipitation_rate, erodibility, uplift):
+    def __init__(self, surface, nodes, max_node, min_node, precipitation_rate, erodibility, uplift, sea_level=0.):
 
         self.surface = surface
         # The surface profile starts at the water divide down to the bottom node of the river.
@@ -16,8 +17,7 @@ class River(object):
         self.precipitation_rate = precipitation_rate
         self.erodibility = erodibility
         self.uplift = uplift
-        self.zT = np.zeros_like(self.surface)
-        self.zR = np.zeros_like(self.surface)
+        self.sea_level = 0.
 
         # Cunulative length along the river
         self.dL = self.cumlength = np.cumsum(np.diff(self.x)**2 + np.diff(self.y)**2)
@@ -30,6 +30,8 @@ class River(object):
             raise ValueError(f"Maximum elevation should be at node 0")
         if not np.allclose(np.diff(self.x), np.diff(self.x)[0]):
             raise ValueError("Spacing in x is not uniform")
+        if not np.all(np.diff(self.x) >= 0.):
+            raise ValueError("X coordinates should increase")
         for key, val in {"nodes": nodes, "precipitation_rate": precipitation_rate, "erodibility": erodibility, "uplift": uplift}.items():
             if val.shape != surface[:,0].shape:
                 raise ValueError(f"Wrong array shape {val.shape} for array '{key}'")
@@ -45,7 +47,7 @@ class River(object):
         Psum = np.cumsum(P * dx) 
         return Psum * ka * x**(h-1)
     
-    def calculate_zT(self, m=0.5, n=1.0, ka=0.3, h=2.0, dt=0.1, bc=0., xC=50):
+    def calculate_zT(self, m, n, ka, h, theta, xC, yC, dt):
         """ Calculate and apply erosion in the trunk channel"""
         
         # The Lowest node in the river is assumed to
@@ -57,71 +59,103 @@ class River(object):
         # We reverse all arrays
         K = self.erodibility[::-1]
         Q = self.get_discharge(ka, h)[::-1]
-        zt = self.y[::-1]
+        zr = self.calculate_zR(m, n, ka, h, theta, xC, yC, dt)
+        zt = self.y - zr / 2.0
+        zt = zt[::-1]
         x = self.x[::-1]
         dx = np.abs(np.diff(x)[0])
+
+        ## Get first index above sea level
+        first_idx = np.argmax(zt - self.sea_level > 0.)
+        print(zt[first_idx])
         
-        e0 = -1e-6
+        e0 = 1e-6
         erosion_rate = np.zeros_like(zt)
-        erosion_rate[0] = 0.
         
         # We integrate from the boundary node to the
         # main divide.
-        for idx in range(1, len(x)):
-            if x[idx] < xC:
-                edot= 0.
-            else:
-                reltol = 1e3
+        for idx in range(first_idx, len(x)):
+            if x[idx] > xC:
+                rtol = 1e3
                 edot = e0
-                while reltol > 1e-7:
+                while rtol > 1e-7:
                     prev = edot
-                    edot = -K[idx] * Q[idx]**m * (zt[idx] - zt[idx - 1] + dt * (edot - erosion_rate[idx-1])) / dx**n
-                    reltol = (edot - prev) / (edot+1e-8) # Avoid divide by zero here.
-            erosion_rate[idx] = edot
+                    edot = -K[idx] * Q[idx]**m * (zt[idx] - zt[idx - 1] + dt * (edot - erosion_rate[idx-1]))**n / dx**n
+                    rtol = np.abs((edot - prev) / prev)
+                erosion_rate[idx] = edot
             zt[idx] = zt[idx] + dt * erosion_rate[idx]
 
         self.zT = zt[::-1]
         return self.zT
+
+    @staticmethod
+    def calculate_yD(ka, x, h):
+        return 0.5 * ka * x**(h-1.0)
+
+    @staticmethod
+    def calculate_N(m, n, ka, h, K, P, xD):
+        return (1.0 / (xD**(h*m) * K * P**m * ka**m))**(1/n)
+
+    @staticmethod
+    def calculate_D(m, n, h, N, yC, yD):
+        hmn = h*m/n
+        D = 0.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            if hmn == 1.0:
+                D = np.where(yD == 0, 0., -0.5 * N*np.log(yC/yD))
+            else:
+                D = np.where(yD == 0, 0., 0.5 * yD**(1-hmn) * N * (1-hmn)**-1 * (1-(yC/yD)**(1-hmn)))
+        return D
+
+    def calculate_zR(self, m, n, ka, h, theta, xC, yC, dt):
+        
+        theta = np.radians(theta)
+        K = self.erodibility
+        P = self.precipitation_rate
+        U = self.uplift
+
+        x = self.x        
+        xD = np.max(x)
+        zR = np.zeros_like(x)
+        
+        hmn = h*m/n
+
+        yD = self.calculate_yD(ka, x, h)
+        N = self.calculate_N(m, n, ka, h, K, P, xD)
+        D = self.calculate_D(m, n, h, N, yC, yD)
+        zR = np.where(yD > yC, yC * np.tan(theta) + 2. * D * U**(1/n)*xD**hmn, yD * np.tan(theta))
+
+        return zR
     
-    def calculate_zR(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=10, yC=10, dt=0.1):
+    def calculate_zD(self, m, n, ka, h, theta, xC, yC, dt):
         
         theta = np.radians(theta)
         K = self.erodibility
         P = self.precipitation_rate
         U = self.uplift
         
-        xD = np.max(self.x)
+        x = self.x
+        xD = np.max(x)
         zT = self.zT
-        zR = np.zeros_like(self.zT)
+        zD = np.zeros_like(self.zT)
         
         hmn = h*m/n
 
-        for ix, x in enumerate(self.x): 
-            D = 0.
-            yD = 0.5 * ka * x**(h-1.0)
-            # Calculate group parameter        
-            N = (1.0 / (xD**(h*m) * K[ix] * P[ix]**m * ka**m))**(1/n)
-            if yD:
-                if hmn == 1.0:
-                    D = -0.5 * N*np.log(yC/yD)
-                else:
-                    D = 0.5 * yD**(1-hmn) * N * (1-hmn)**-1 * (1-(yC/yD)**(1-hmn))
-            if yD > yC:
-                zD = zT[ix] + yC * np.tan(theta) + 2. * D * U[ix]**(1/n)*xD**hmn
-            else:
-                zD = zT[ix] + yD * np.tan(theta)
-        
-            edotR = 0.
-            if D:
-                edotR = K[ix] * P[ix]**m*ka**m * ((zD - zT[ix] - yC * np.tan(theta)) / (2*D*xD**hmn))**n
-            zR[ix] = zD + dt * edotR # need to check that...
+        yD = self.calculate_yD(ka, x, h)
+        N = self.calculate_N(m, n, ka, h, K, P, xD)
+        D = self.calculate_D(m, n, h, N, yC, yD)
 
-        return zR
+        with np.errstate(divide='ignore', invalid='ignore'):
+            zD = np.where(yD > yC, zT + yC * np.tan(theta) + 2. * D * U**(1/n)*xD**hmn, zT + yD * np.tan(theta))
+            edotR = np.where(D, -K * P**m*ka**m * ((zD - zT - yC * np.tan(theta)) / (2*D*xD**hmn))**n, 0)
+        zD = zD + dt * edotR
+
+        return zD
     
-    def update_surface(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=1000, yC=100, dt=0.1):
-        zT = self.calculate_zT(m, n, ka, h, dt)
-        zR = self.calculate_zR(m, n, ka, h, theta, xC, yC, dt)
-        self.surface[:, 1] = 0.5 * (zT + zR)
+    def update_surface(self, m=0.5, n=1.0, ka=0.3, h=2.0, theta=30, xC=10, yC=10, dt=0.1):
+        zT = self.calculate_zT(m, n, ka, h, theta, xC, yC, dt)
+        zD = self.calculate_zD(m, n, ka, h, theta, xC, yC, dt)
+        self.surface[:, 1] = 0.5 * (zT + zD)
         return self.surface
 
     def plot(self):
